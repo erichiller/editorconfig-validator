@@ -1,12 +1,26 @@
 using System;
+
 using System.Linq;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+
+using CSharpShellCore;
+using System.Text.Json.Nodes;
+using EditorconfigValidator;
+
+
 
 namespace EditorconfigValidator;
 
+
+
 public static class Program {
-    public static void Main() {
+
+    public static async void Main() {
         List<ILineState> status = new();
 
         string[] lines = """
@@ -37,7 +51,7 @@ public static class Program {
                 _ when Regex.IsMatch(line, @"^\s*[^#;].*[#;]") => new ErrorLineState(lineNumber, "Comments are only permitted on dedicated lines"),
                 ['[', .. var value, ']'] => new SectionLineState(lineNumber, LineStatusLevel.Ok, value),
                 _ when Regex.Match(lines[^1], @"^\s*([^=]+)\s*=\s*([^=]+)") is { Groups: [{ }, { Value: { } key }, { Value: { } value }] } =>
-                       rules.SingleOrDefault(r => r.Key.Equals(key, r.StringComparison)) switch {
+                       _rules.SingleOrDefault(r => r.Key.Equals(key, r.StringComparison)) switch {
                            _ => new KeyValueLineState(lineNumber, key, value, "Unknown key", LineStatusLevel.Error)
                        },
                 _ => new ErrorLineState(lineNumber, "INVALID FORMAT")
@@ -61,16 +75,21 @@ public static class Program {
         foreach (var s in status) {
             Console.WriteLine(s);
         }
+        
+        var rules = await DotNetAnalyzerManager.GetAsync();
+        System.Console.WriteLine( $"retrieved {rules.Length} rules" );
 
     }
 
-    static List<KeyValueRule> rules = new List<KeyValueRule>{
+    private static List<KeyValueRule> _rules = new List<KeyValueRule>{
         new KeyValueRule(
             Key: "dotnet_diagnostic.CA0000.something",
             ValueRegex: ".*"
         )
     };
+
 }
+
 
 public record KeyValueRule(
     string Key,
@@ -134,4 +153,84 @@ public enum LineStatusLevel {
     Ok,
     Info,
     Error
+}
+
+public record NetAnalyzersSarif(
+    string Id,
+    string ShortDescription,
+    string FullDescription,
+    string DefaultLevel, // enum ? (warning)
+    string HelpUri,
+    NetAnalyzersSarif.AnalyzerProperties Properties
+) {
+    public record AnalyzerProperties(
+        string Category, // enum ? "category": "Design"
+        bool IsEnabledByDefault,
+        string TypeName,
+        string[] Languages,
+        string[] Tags
+    ) { }
+}
+
+public static class DotNetAnalyzerManager {
+
+    const string _code_quality_md_url = "https://raw.githubusercontent.com/dotnet/docs/main/docs/fundamentals/code-analysis/quality-rules/index.md";
+    const string _code_quality_json_url_latest_stable = "https://github.com/dotnet/roslyn-analyzers/raw/release/8.0.2xx/src/NetAnalyzers/Microsoft.CodeAnalysis.NetAnalyzers.sarif";
+    const string _code_quality_json_url_latest = "https://github.com/dotnet/roslyn-analyzers/raw/main/src/NetAnalyzers/Microsoft.CodeAnalysis.NetAnalyzers.sarif";
+
+
+    public static async Task<NetAnalyzersSarif[]> GetAsync() {
+        HttpClient sharedClient = new() {
+            // BaseAddress = new Uri(_code_quality_json_url_latest),
+        };
+        var jsonDoc = await JsonDocument.ParseAsync(
+            await sharedClient.GetStreamAsync(_code_quality_json_url_latest) );
+        // jsonDoc.RootElement["x"];
+        JsonNode jsonNode = await JsonNode.ParseAsync( await sharedClient.GetStreamAsync(_code_quality_json_url_latest) );
+        /*
+        var rulesNode = jsonNode["runs"].AsArray().SelectMany( x => x.)
+        
+        .FirstOrDefault()
+        ["rules"];
+        System.Console.WriteLine( rulesNode );
+        var sarifDict = rulesNode.Deserialize<Dictionary<string,NetAnalyzersSarif>>() ;
+        return sarifDict.Values.ToArray();
+        */
+        var rules = jsonNode["runs"].AsArray().SelectMany( x => x["rules"].Deserialize<Dictionary<string,NetAnalyzersSarif>>().Values ).ToArray();
+        return rules;
+    }
+
+    /*
+       {
+           "$schema": "http://json.schemastore.org/sarif-1.0.0",
+  "version": "1.0.0",
+  "runs": [
+    {
+      "tool": {
+        "name": "Microsoft.CodeAnalysis.CSharp.NetAnalyzers",
+        "version": "9.0.0",
+        "language": "en-US"
+      },
+      "rules": {
+        "CA1032": {
+          "id": "CA1032",
+          "shortDescription": "Implement standard exception constructors",
+          "fullDescription": "Failure to provide the full set of constructors can make it difficult to correctly handle exceptions.",
+          "defaultLevel": "warning",
+          "helpUri": "https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1032",
+          "properties": {
+            "category": "Design",
+            "isEnabledByDefault": false,
+            "typeName": "CSharpImplementStandardExceptionConstructorsAnalyzer",
+            "languages": [
+              "C#"
+            ],
+            "tags": [
+              "PortedFromFxCop",
+              "Telemetry",
+              "EnabledRuleInAggressiveMode"
+            ]
+          }
+        },
+     */
 }
