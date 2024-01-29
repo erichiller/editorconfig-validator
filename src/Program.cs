@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using CSharpShellCore;
 using System.Text.Json.Nodes;
 using EditorconfigValidator;
+using System.IO;
 
 
 
@@ -19,6 +20,7 @@ namespace EditorconfigValidator;
 
 
 public static class Program {
+    const string _cacheDir = "rules";
 
     public static async void Main() {
         List<ILineState> status = new();
@@ -75,9 +77,13 @@ public static class Program {
         foreach (var s in status) {
             Console.WriteLine(s);
         }
-        
-        var rules = await DotNetAnalyzerManager.GetAsync();
-        System.Console.WriteLine( $"retrieved {rules.Length} rules" );
+
+        if (!System.IO.Directory.Exists(_cacheDir)) {
+            System.IO.Directory.CreateDirectory(_cacheDir);
+        }
+
+        var rules = await DotNetAnalyzerManager.GetNetAnalyzersAsync(_cacheDir);
+        System.Console.WriteLine($"retrieved {rules.Length} rules");
 
     }
 
@@ -89,20 +95,6 @@ public static class Program {
     };
 
 }
-
-
-public record KeyValueRule(
-    string Key,
-    string ValueRegex,
-    string? Name = null,
-    string? DefaultValue = null,
-    string? Description = null,
-    string? DocumentationUrl = null
-) {
-    // public bool IsKeyCaseSensitive { get; init; } = false
-    public StringComparison StringComparison { get; } = StringComparison.OrdinalIgnoreCase;
-}
-
 public interface ILineState {
     public int LineNumber { get; }
     public LineStatusLevel Status { get; }
@@ -179,24 +171,38 @@ public static class DotNetAnalyzerManager {
     const string _code_quality_json_url_latest = "https://github.com/dotnet/roslyn-analyzers/raw/main/src/NetAnalyzers/Microsoft.CodeAnalysis.NetAnalyzers.sarif";
 
 
-    public static async Task<NetAnalyzersSarif[]> GetAsync() {
-        HttpClient sharedClient = new() {
-            // BaseAddress = new Uri(_code_quality_json_url_latest),
-        };
-        var jsonDoc = await JsonDocument.ParseAsync(
-            await sharedClient.GetStreamAsync(_code_quality_json_url_latest) );
-        // jsonDoc.RootElement["x"];
-        JsonNode jsonNode = await JsonNode.ParseAsync( await sharedClient.GetStreamAsync(_code_quality_json_url_latest) );
-        /*
-        var rulesNode = jsonNode["runs"].AsArray().SelectMany( x => x.)
-        
-        .FirstOrDefault()
-        ["rules"];
-        System.Console.WriteLine( rulesNode );
-        var sarifDict = rulesNode.Deserialize<Dictionary<string,NetAnalyzersSarif>>() ;
-        return sarifDict.Values.ToArray();
-        */
-        var rules = jsonNode["runs"].AsArray().SelectMany( x => x["rules"].Deserialize<Dictionary<string,NetAnalyzersSarif>>().Values ).ToArray();
+    public static async Task<NetAnalyzersSarif[]> GetNetAnalyzersAsync(string? cacheDir) {
+        string cacheFileName = "code_quality_rules.json";
+        string? cacheFilePath = cacheDir is { } ? Path.Combine(cacheDir, cacheFileName) : null;
+        NetAnalyzersSarif[] rules;
+        if (cacheFilePath is { } && Path.Exists(cacheFilePath)) {
+            Console.WriteLine($"Loading from {cacheFilePath}");
+            rules = JsonSerializer.Deserialize<NetAnalyzersSarif[]>(File.OpenRead(cacheFilePath)) ?? throw new JsonException();
+
+        } else {
+            HttpClient sharedClient = new() {
+                // BaseAddress = new Uri(_code_quality_json_url_latest),
+            };
+            var jsonDoc = await JsonDocument.ParseAsync(
+                await sharedClient.GetStreamAsync(_code_quality_json_url_latest));
+            // jsonDoc.RootElement["x"];
+            JsonNode jsonNode = await JsonNode.ParseAsync(await sharedClient.GetStreamAsync(_code_quality_json_url_latest)) ?? throw new JsonException();
+            /*
+            var rulesNode = jsonNode["runs"].AsArray().SelectMany( x => x.)
+
+            .FirstOrDefault()
+            ["rules"];
+            System.Console.WriteLine( rulesNode );
+            var sarifDict = rulesNode.Deserialize<Dictionary<string,NetAnalyzersSarif>>() ;
+            return sarifDict.Values.ToArray();
+            */
+            rules = jsonNode["runs"]?.AsArray().SelectMany(x => (x?["rules"].Deserialize<Dictionary<string, NetAnalyzersSarif>>() ?? throw new JsonException()).Values).ToArray() ?? throw new JsonException();
+
+            if (cacheFilePath is { }) {
+                System.IO.File.WriteAllText(cacheFilePath, JsonSerializer.Serialize(rules));
+                Console.WriteLine($"Saving to {cacheFilePath}");
+            }
+        }
         return rules;
     }
 
@@ -234,3 +240,61 @@ public static class DotNetAnalyzerManager {
         },
      */
 }
+
+public record KeyValueRule(
+    string Key,
+    string ValueRegex,
+    string? Name = null,
+    string? DefaultValue = null,
+    string? Description = null,
+    string? DocumentationUrl = null
+) {
+    // public bool IsKeyCaseSensitive { get; init; } = false
+    public StringComparison StringComparison { get; } = StringComparison.OrdinalIgnoreCase;
+}
+
+file static class Constants {
+
+    // Supported values
+    // https://spec.editorconfig.org/
+    private const string editorConfigBaseRules = """
+    [
+        {
+            "Key": "indent_style",
+            "Description": "Set to tab or space to use hard tabs or soft tabs respectively. The values are case insensitive.",
+            "ValueRegex": "(tab|space)"
+        },
+        {
+            "Key": "indent_size",
+            "Description": "Set to a whole number defining the number of columns used for each indentation level and the width of soft tabs (when supported). If this equals tab, the indent_size shall be set to the tab size, which should be tab_width (if specified); else, the tab size set by the editor. The values are case insensitive.",
+            "ValueRegex": "[0-9]+"
+        },
+        {
+            "Key": "tab_width",
+            "Description": "Set to a whole number defining the number of columns used to represent a tab character. This defaults to the value of indent_size and should not usually need to be specified.",
+            "ValueRegex": "[0-9]+"
+        },    
+        {
+            "Key": "end_of_line",
+            "Description": "Set to lf, cr, or crlf to control how line breaks are represented. The values are case insensitive.",
+            "ValueRegex": "(lf|cr|crlf)"
+        },
+        {
+            "Key": "charset",
+            "Description": "Set to latin1, utf-8, utf-8-bom, utf-16be or utf-16le to control the character set. Use of utf-8-bom is discouraged.",
+            "ValueRegex": "(latin1|utf-8|utf-8-bom|utf-16be|utf-16le)"
+        },    
+        {
+            "Key": "trim_trailing_whitespace",
+            "Description": "Set to true to remove all whitespace characters preceding newline characters in the file and false to ensure it doesn’t.",
+            "ValueRegex": "(true|false)"
+        },
+        {
+            "Key": "insert_final_newline",
+            "Description": "Set to true ensure file ends with a newline when saving and false to ensure it doesn’t.",
+            "ValueRegex": "(true|false)"
+        }
+    ]
+    """;
+    // root  : Must be specified in the preamble. Set to true to stop the .editorconfig file search on the current file. The value is case insensitive.
+    }
