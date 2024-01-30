@@ -21,20 +21,38 @@ namespace EditorconfigValidator;
 
 public static class Program {
     const string _cacheDir = "rules";
+    
+    private static void log( object? value = null ) => System.Console.WriteLine( value ?? String.Empty);
 
     public static async void Main() {
+        
+        // rules
+        if (!System.IO.Directory.Exists(_cacheDir)) {
+            System.IO.Directory.CreateDirectory(_cacheDir);
+        }
+
+        var rules = await DotNetAnalyzerManager.GetNetAnalyzersAsync(_cacheDir);
+        System.Console.WriteLine($"retrieved {rules.Length} rules");
+
+        
         List<ILineState> status = new();
 
         string[] lines = """
-        
+        root = 1
         [sectionHere]
+        root = true
         
         # this is a comment
         Key = Value
         Key = Value ; bad comment
+        Argle = Bargle
         """.Split(System.Environment.NewLine);
         int lineNumber = 0;
-
+        
+        Console.WriteLine( String.Join(System.Environment.NewLine, lines.Select( ( l, i) => $"{i,-5} {l}")));
+        Console.WriteLine();
+        
+        
         {
             Console.WriteLine(
                 Regex.Match(lines[^1], @"^\s*[^=]+=[^=]+") is { Groups: [{ Value: { } }] });
@@ -43,8 +61,10 @@ public static class Program {
                 Console.WriteLine(v2);
                 Console.WriteLine(v3);
             }
-            Console.WriteLine();
+            Console.WriteLine("\n");
         }
+        
+        List<SectionLineState> sections = new List<SectionLineState> { new SectionLineState(-1, LineStatusLevel.Ok, String.Empty ) }; // starts with a "root" section. line = -1 to identify it uniquely.
         foreach (var line in lines) {
             ILineState x = line.Trim() switch {
                 "" => new EmptyLineState(lineNumber),
@@ -52,39 +72,33 @@ public static class Program {
                 _ when line.Contains("\\\\") => new ErrorLineState(lineNumber, "Double Slashes are not allowed"),
                 _ when Regex.IsMatch(line, @"^\s*[^#;].*[#;]") => new ErrorLineState(lineNumber, "Comments are only permitted on dedicated lines"),
                 ['[', .. var value, ']'] => new SectionLineState(lineNumber, LineStatusLevel.Ok, value),
-                _ when Regex.Match(lines[^1], @"^\s*([^=]+)\s*=\s*([^=]+)") is { Groups: [{ }, { Value: { } key }, { Value: { } value }] } =>
-                       _rules.SingleOrDefault(r => r.Key.Equals(key, r.StringComparison)) switch {
-                           _ => new KeyValueLineState(lineNumber, key, value, "Unknown key", LineStatusLevel.Error)
+                _ when Regex.Match(line, @"^\s*([^=]+?)\s*=\s*([^=]+)") is { Groups: [{ }, { Value: { } key }, { Value: { } value }] } =>
+                    (key, value) switch {
+                        ("root", _) when sections.Count != 1 => new KeyValueLineState(lineNumber, key, value, "'root' must be in root section.", LineStatusLevel.Error),
+                        ("root", "true" or "false") => new KeyValueLineState(lineNumber, key, value ),
+                        ("root", _) => new KeyValueLineState(lineNumber, key, value, $"Invalid value '{value}' for key 'root'. Must be 'true' or 'false'", LineStatusLevel.Error),
+                        _ => _rules.SingleOrDefault(r => r.Key.Equals(key, r.StringComparison)) switch {
+                           _ => new KeyValueLineState(lineNumber, key, value, $"Unknown key '{key}' + '{value}'", LineStatusLevel.Error)
                        },
+                    },
                 _ => new ErrorLineState(lineNumber, "INVALID FORMAT")
             };
+            if ( x is SectionLineState s ){
+                sections.Add( s );
+                // log( $"Section = {s}");
+            } else {
+                sections[^1].Children.Add(x);
+            }
             status.Add(x);
             lineNumber++;
-
-            /*
-            "^\s*$" { $ok = "Empty" }
-              "\\" { $err = "Double backslash" }
-              "^\s*[#;]" { $ok = "Comment" }
-              "^\s*\[.+\]\s*$" { $ok = "Section" }
-              "^\s*[^#;].*[#;]" { $err = "Comment not at beginning of line" }
-              "^\s*[^=]+=[^=]+" { "key = value" }
-              default { $err = "INVALID FORMAT" }
-              */
-
         }
-
+        
+        log();
+        
         // display
         foreach (var s in status) {
-            Console.WriteLine(s);
+            Console.WriteLine( ">> " + s + "\n");
         }
-
-        if (!System.IO.Directory.Exists(_cacheDir)) {
-            System.IO.Directory.CreateDirectory(_cacheDir);
-        }
-
-        var rules = await DotNetAnalyzerManager.GetNetAnalyzersAsync(_cacheDir);
-        System.Console.WriteLine($"retrieved {rules.Length} rules");
-
     }
 
     private static List<KeyValueRule> _rules = new List<KeyValueRule>{
@@ -116,6 +130,7 @@ public record SectionLineState(
     LineStatusLevel Status,
     string SectionText
 ) : ILineState {
+    public List<ILineState> Children { get; } = new();
     //    public string? Message { get; init; } = null;
 }
 
