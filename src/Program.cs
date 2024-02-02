@@ -21,20 +21,22 @@ namespace EditorconfigValidator;
 
 public static class Program {
     const string _cacheDir = "rules";
-    
-    private static void log( object? value = null ) => System.Console.WriteLine( value ?? String.Empty);
+
+    private static void log(object? value = null) => System.Console.WriteLine(value ?? String.Empty);
 
     public static async void Main() {
-        
+
         // rules
         if (!System.IO.Directory.Exists(_cacheDir)) {
             System.IO.Directory.CreateDirectory(_cacheDir);
         }
 
-        var rules = await DotNetAnalyzerManager.GetNetAnalyzersAsync(_cacheDir);
-        System.Console.WriteLine($"retrieved {rules.Length} rules");
+        var netCa = await DotNetAnalyzerManager.GetNetAnalyzersAsync(_cacheDir);
+        _rules.AddRange( netCa ); // .Select(n => n ));
+        System.Console.WriteLine($"retrieved {netCa.Length} rules");
+        System.Console.WriteLine(_rules[1] );
+        return;
 
-        
         List<ILineState> status = new();
 
         string[] lines = """
@@ -48,11 +50,11 @@ public static class Program {
         Argle = Bargle
         """.Split(System.Environment.NewLine);
         int lineNumber = 0;
-        
-        Console.WriteLine( String.Join(System.Environment.NewLine, lines.Select( ( l, i) => $"{i,-5} {l}")));
+
+        Console.WriteLine(String.Join(System.Environment.NewLine, lines.Select((l, i) => $"{i,-5} {l}")));
         Console.WriteLine();
-        
-        
+
+
         {
             Console.WriteLine(
                 Regex.Match(lines[^1], @"^\s*[^=]+=[^=]+") is { Groups: [{ Value: { } }] });
@@ -63,8 +65,8 @@ public static class Program {
             }
             Console.WriteLine("\n");
         }
-        
-        List<SectionLineState> sections = new List<SectionLineState> { new SectionLineState(-1, LineStatusLevel.Ok, String.Empty ) }; // starts with a "root" section. line = -1 to identify it uniquely.
+
+        List<SectionLineState> sections = new List<SectionLineState> { new SectionLineState(-1, LineStatusLevel.Ok, String.Empty) }; // starts with a "root" section. line = -1 to identify it uniquely.
         foreach (var line in lines) {
             ILineState x = line.Trim() switch {
                 "" => new EmptyLineState(lineNumber),
@@ -75,16 +77,16 @@ public static class Program {
                 _ when Regex.Match(line, @"^\s*([^=]+?)\s*=\s*([^=]+)") is { Groups: [{ }, { Value: { } key }, { Value: { } value }] } =>
                     (key, value) switch {
                         ("root", _) when sections.Count != 1 => new KeyValueLineState(lineNumber, key, value, "'root' must be in root section.", LineStatusLevel.Error),
-                        ("root", "true" or "false") => new KeyValueLineState(lineNumber, key, value ),
+                        ("root", "true" or "false") => new KeyValueLineState(lineNumber, key, value),
                         ("root", _) => new KeyValueLineState(lineNumber, key, value, $"Invalid value '{value}' for key 'root'. Must be 'true' or 'false'", LineStatusLevel.Error),
                         _ => _rules.SingleOrDefault(r => r.Key.Equals(key, r.StringComparison)) switch {
-                           _ => new KeyValueLineState(lineNumber, key, value, $"Unknown key '{key}' + '{value}'", LineStatusLevel.Error)
-                       },
+                            _ => new KeyValueLineState(lineNumber, key, value, $"Unknown key '{key}' + '{value}'", LineStatusLevel.Error)
+                        },
                     },
                 _ => new ErrorLineState(lineNumber, "INVALID FORMAT")
             };
-            if ( x is SectionLineState s ){
-                sections.Add( s );
+            if (x is SectionLineState s) {
+                sections.Add(s);
                 // log( $"Section = {s}");
             } else {
                 sections[^1].Children.Add(x);
@@ -92,16 +94,16 @@ public static class Program {
             status.Add(x);
             lineNumber++;
         }
-        
+
         log();
-        
+
         // display
         foreach (var s in status) {
-            Console.WriteLine( ">> " + s + "\n");
+            Console.WriteLine(">> " + s + "\n");
         }
     }
 
-    private static List<KeyValueRule> _rules = new List<KeyValueRule>{
+    private static List<IKeyValueRule> _rules = new List<IKeyValueRule>{
         new KeyValueRule(
             Key: "dotnet_diagnostic.CA0000.something",
             ValueRegex: ".*"
@@ -169,7 +171,7 @@ public record NetAnalyzersSarif(
     string DefaultLevel, // enum ? (warning)
     string HelpUri,
     NetAnalyzersSarif.AnalyzerProperties Properties
-) {
+) : IKeyValueRule {
     public record AnalyzerProperties(
         string Category, // enum ? "category": "Design"
         bool IsEnabledByDefault,
@@ -177,6 +179,31 @@ public record NetAnalyzersSarif(
         string[] Languages,
         string[] Tags
     ) { }
+    
+    static string[] Levels = [
+        "warning"
+    ];
+    
+    string IKeyValueRule.Key => Id;
+    string IKeyValueRule.ValueRegex { get; } = '(' + String.Join( '|', Levels ) + ')';
+    string IKeyValueRule.Name => this.ShortDescription;
+    string IKeyValueRule.DefaultValue => DefaultLevel;
+    string IKeyValueRule.Description => FullDescription;
+    string IKeyValueRule.DocumentationUrl => HelpUri;
+    StringComparison IKeyValueRule.StringComparison => StringComparison.OrdinalIgnoreCase;
+
+/*
+    public KeyValueRule ToKeyValueRule() {
+        return new KeyValueRule(
+            Key: this.Id,
+            ValueRegex = "()",
+            Name: this.ShortDescription,
+            DefaultValue = this.DefaultLevel,
+            Description = this.FullDescription,
+            DocumentationUrl = this.HelpUri
+        );
+    }
+    */
 }
 
 public static class DotNetAnalyzerManager {
@@ -256,6 +283,16 @@ public static class DotNetAnalyzerManager {
      */
 }
 
+public interface IKeyValueRule {
+    public string Key { get; }
+    public string ValueRegex { get; }
+    public string? Name { get; }
+    public string? DefaultValue { get; }
+    public string? Description { get; }
+    public string? DocumentationUrl { get; }
+    public StringComparison StringComparison { get; }
+}
+
 public record KeyValueRule(
     string Key,
     string ValueRegex,
@@ -263,7 +300,7 @@ public record KeyValueRule(
     string? DefaultValue = null,
     string? Description = null,
     string? DocumentationUrl = null
-) {
+) : IKeyValueRule {
     // public bool IsKeyCaseSensitive { get; init; } = false
     public StringComparison StringComparison { get; } = StringComparison.OrdinalIgnoreCase;
 }
